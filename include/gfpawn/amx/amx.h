@@ -5,6 +5,8 @@
 #include <iostream>
 #include <fstream>
 #include <vector>
+#include <algorithm>
+#include <format>
 
 #include "amx_commands.h"
 #include "amx_opcodes.h"
@@ -40,8 +42,8 @@ namespace pawn {
                 printf("- Code Start Address:   0x%08X\n", m_Header->Code);
                 printf("- Data Start Address:   0x%08X\n", m_Header->Data);
                 printf("- Heap Start Address:   0x%08X\n", m_Header->Heap);
-                printf("- Stack End Address:    0x%08X\n", m_Header->stp);
-                printf("- Program Main: 0x%08X\n", m_Header->cip);
+                printf("- Stack End Address:    0x%08X\n", m_Header->StackPointer);
+                printf("- Program Main: 0x%08X\n", m_Header->InstructionPointer);
 
                 // Functions and whatnot.
                 pawn::AMXUtil::TableDef Properties[] = {
@@ -55,14 +57,14 @@ namespace pawn {
                 };
 
                 // Just so I don't have to do a switch case somewhere...
-                std::vector<std::string> SymbolVectors[] = {
-                    m_PublicSymbols, 
-                    m_NativeSymbols, 
-                    m_LibSymbols, 
-                    m_PubVarSymbols, 
-                    m_TagNameSymbols, 
-                    m_NameTableSymbols, 
-                    m_OverlaySymbols
+                std::vector<std::string> *SymbolVectors[] = {
+                    &m_PublicSymbols, 
+                    &m_NativeSymbols, 
+                    &m_LibSymbols, 
+                    &m_PubVarSymbols, 
+                    &m_TagNameSymbols, 
+                    &m_NameTableSymbols, 
+                    &m_OverlaySymbols
                 };
 
                 for (int i = 0; i < 0x7; ++i) {
@@ -75,11 +77,10 @@ namespace pawn {
                         // Bruteforce hashes to find the name corresponding to the hash.
                         std::string Name = pawn::AMXUtil::FNVLookup(Entry.Hash);
                         if (Name == "") {
-                            printf("\tCould not find a name that corresponds to hash %x; skipping...\n", Entry.Hash); 
-                        } else {
-                            std::cout << "\t- " << Name << std::endl;
-                            SymbolVectors[i].push_back(Name);
+                            Name = std::format("HASH_{}", Entry.Hash);
                         }
+                        std::cout << "\t- " << Name << std::endl;
+                        SymbolVectors[i]->push_back(Name);
                     }
                 }
 
@@ -89,9 +90,11 @@ namespace pawn {
 
                 m_Code = (uint8_t *)malloc(m_CodeSize * sizeof(uint8_t));
                 m_Data = (uint8_t *)malloc(m_DataSize * sizeof(uint8_t));
+                memset(m_Code, 0, m_CodeSize * sizeof(uint8_t));
+                memset(m_Data, 0, m_DataSize * sizeof(uint8_t));
 
                 // Check if compressed.
-                if (m_Header->Flags & AMXFlags::AMX_FLAG_COMPACT) {
+                if (m_Header->Flags & Flags::AMX_FLAG_COMPACT) {
                     // Compressed; time to decompress.
                     std::cout << "File is compressed! Decompressing..." << std::endl;
                     
@@ -105,12 +108,12 @@ namespace pawn {
                     
                     // Read data and perform decompression.
                     input.seekg(m_Header->Code);
-                    input.read((char *)Data, CompressedSize);
+                    input.read((char *)Data, DecompressedSize);
                     pawn::AMXUtil::DecompressInPlace(Data, CompressedSize, DecompressedSize);
 
                     // Copy decompressed data to the respective locations.
                     memcpy(m_Code, Data, m_CodeSize);
-                    memcpy(m_Data, Data, m_DataSize);
+                    memcpy(m_Data, Data + m_CodeSize, m_DataSize);
 
                     free(Data);
                 } else {
@@ -126,16 +129,78 @@ namespace pawn {
             }
 
             void Decode() {
-                uint32_t OpcodeCount = m_CodeSize >> 2;
-                uint32_t *CodePtr = (uint32_t *)m_Code;
-                for (uint32_t Index = 0; Index < OpcodeCount; ++Index) {
-                    Command* cmd = CommandList[*CodePtr++ & 0xFF];
-                    std::cout << cmd->GetLabel() << " ";
-                    for (uint32_t ParamIndex = 0; ParamIndex < cmd->GetParameterCount(); ++ParamIndex) {
-                        std::cout << *CodePtr++;;
+                std::vector<Command *> Commands;
+                // Pass 1: Parse all opcodes in order.
+                uint32_t *CodePtr = (uint32_t*)(m_Code);
+                uint32_t CurrentAddress = 0x0;
+                uint32_t CodeSize = m_Header->Data - m_Header->Code;
+
+                while (CurrentAddress < CodeSize) {
+                    uint32_t Idx = *CodePtr++;
+                    Command* cmd = new Command(CommandList[Idx & 0xFFFF]);
+                    for (int Index = 0; Index < cmd->GetParameterCount(); ++Index) {  
+                        switch (cmd->GetParameterType()) {
+                            case PACKED: {
+                                // Packed (.p) parameters store parameter in upper 16 bits of command.
+                                uint32_t parameter = (Idx >> 0x8) & 0xFFFF;
+                                cmd->AddParameter(parameter);
+                                break;
+                            }
+                            case CALL:
+                            case JUMP: {
+                                // Separate calls and jumps so we know where they are; will become important in pass 2.
+                                uint32_t parameter = *CodePtr++;
+                                if (cmd->GetParameterType() == CALL) {
+                                    cmd->AddParameter(CurrentAddress - 4 + (int32_t)parameter);
+                                    uint32_t CallAddress = cmd->GetParameters()->at(0);
+                                    if (std::find(m_CallList.begin(), m_CallList.end(), CallAddress) == m_CallList.end()) {
+                                        m_CallList.push_back(CallAddress);
+                                    }
+                                } else if (cmd->GetParameterType() == JUMP) {
+                                    cmd->AddParameter(CurrentAddress - 4 + (int32_t)parameter);
+                                    uint32_t JumpAddress = cmd->GetParameters()->at(0);
+                                    if (std::find(m_JumpList.begin(), m_JumpList.end(), JumpAddress) == m_JumpList.end()) {
+                                        m_JumpList.push_back(JumpAddress);
+                                    }
+                                }
+                                break;
+                            }
+                            case CASETBL: {
+                                uint32_t case_count = *CodePtr++;
+                                uint32_t default_addr = *CodePtr++;
+                                for (int i = 0; i < case_count << 1; ++i) {
+                                    *CodePtr++;
+                                }
+                                break;
+                            }
+                            default: {
+                                cmd->AddParameter(*CodePtr++);
+                                break;
+                            }
+                        } 
                     }
-                    std::cout << std::endl;
+                    CurrentAddress += cmd->GetSize();
+                    Commands.push_back(cmd);
                 }
+                std::cout << std::format("Calls = {}, Jumps = {}", m_CallList.size(), m_JumpList.size()) << std::endl;
+
+                // Pass 2: Write all higher level reprs to amx output.
+                CurrentAddress = 0;
+                std::fstream amx_output("disassembly.amx", std::ios::out);
+                for (Command * cmd : Commands) {
+                    bool IsJump = std::find(m_JumpList.begin(), m_JumpList.end(), CurrentAddress) != m_JumpList.end();
+                    bool IsCall = std::find(m_CallList.begin(), m_CallList.end(), CurrentAddress) != m_CallList.end();
+                    if (IsJump) {
+                        amx_output << std::format("jump_{}:", CurrentAddress) << std::endl;
+                    } else if (CurrentAddress == m_Header->InstructionPointer) {
+                        amx_output << std::format("main:", CurrentAddress) << std::endl;
+                    } else if (IsCall) {
+                        amx_output << std::format("fn_{}:", CurrentAddress) << std::endl;
+                    }
+                    amx_output << std::format("\t{} {}", cmd->GetLabel(), cmd->GetParametersToString()) << std::endl;
+                    CurrentAddress += cmd->GetSize();
+                }
+                amx_output.close();
             }
 
         private:
@@ -149,8 +214,8 @@ namespace pawn {
                 uint32_t Code;
                 uint32_t Data;
                 uint32_t Heap;
-                uint32_t stp;
-                uint32_t cip;
+                uint32_t StackPointer;
+                uint32_t InstructionPointer;
                 uint32_t Publics;
                 uint32_t Natives;
                 uint32_t Libraries;
@@ -160,22 +225,19 @@ namespace pawn {
                 uint32_t Overlays;
             };
 
-            enum AMXFlags {
+            enum Flags {
                 AMX_FLAG_OVERLAY = 0x0001, /* all function calls use overlays */
                 AMX_FLAG_DEBUG = 0x0002,   /* symbolic info. available */
                 AMX_FLAG_COMPACT = 0x0004, /* compact encoding */
                 AMX_FLAG_SLEEP = 0x0008,   /* script uses the sleep instruction (possible re-entry or power-down mode) */
-
                 AMX_FLAG_NOCHECKS = 0x0010,  /* no array bounds checking; no BREAK opcodes */
                 AMX_FLAG_DSEG_INIT = 0x0020, /* data section is explicitly initialized */
                 AMX_FLAG_RESERVED_1 = 0x0040,
                 AMX_FLAG_RESERVED_2 = 0x0080,
-
                 AMX_FLAG_RESERVED_3 = 0x0100,
                 AMX_FLAG_RESERVED_4 = 0x0200,
                 AMX_FLAG_RESERVED_5 = 0x0400,
                 AMX_FLAG_SYSREQN = 0x0800, /* script uses new (optimized) version of SYSREQ opcode */
-
                 AMX_FLAG_NTVREG = 0x1000, /* all native functions are registered */
                 AMX_FLAG_JITC = 0x2000,   /* abstract machine is JIT compiled */
                 AMX_FLAG_VERIFY = 0x4000, /* busy verifying P-code */
@@ -187,6 +249,11 @@ namespace pawn {
             uint32_t m_CodeSize;
             uint8_t *m_Data;
             uint32_t m_DataSize;
+
+            // Disassembly stuff.
+            std::vector<uint32_t> m_CallList;
+            std::vector<uint32_t> m_JumpList;
+            std::vector<uint32_t> m_ClosedList;
 
             // Symbol stuff.
             std::vector<std::string> m_PublicSymbols; 

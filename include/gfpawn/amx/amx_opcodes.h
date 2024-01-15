@@ -3,7 +3,7 @@
 
 namespace pawn {
     enum Opcode {
-        CMD_UNKNOWN,
+        CMD_NOOP,
         CMD_LOAD_PRI,  
         CMD_LOAD_ALT,  
         CMD_LOAD_S_PRI,
@@ -232,8 +232,6 @@ namespace pawn {
         ICASETBL, // (casenum|ADDRESS) followed by casenum times (SIMPLE|ADDRESS) pairs
         PACKED    // Packed inside the opcode itself, no additional field
     };
-
-    
 }
 
 #endif

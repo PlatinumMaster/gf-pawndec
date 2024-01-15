@@ -3,17 +3,26 @@
 
 #include <string>
 #include <cstdint>
+#include <sstream>
 #include "amx_opcodes.h"
 
 namespace pawn {
     class Command {
         public:
-            Command(pawn::Opcode opcode, std::string label, ParameterTypes type, uint32_t parameter_count, uint32_t *parameters = NULL) {
+            Command(pawn::Opcode opcode, std::string label, ParameterTypes type, uint32_t parameter_count, std::vector<uint32_t> *parameters = NULL) {
                 this->m_Label = label;
                 this->m_Opcode = opcode;
                 this->m_Type = type;
                 this->m_ParameterCount = parameter_count;
                 this->m_Parameters = parameters;
+            }
+
+            Command(Command *t) {
+                this->m_Label = t->m_Label;
+                this->m_Opcode = t->m_Opcode;
+                this->m_Type = t->m_Type;
+                this->m_ParameterCount = t->m_ParameterCount;
+                this->m_Parameters = t->m_Parameters;
             }
 
             std::string GetLabel() {
@@ -28,12 +37,38 @@ namespace pawn {
                 return this->m_Type;
             }
 
+            uint32_t GetSize() {
+                if (this->GetParameterType() == PACKED || !this->m_Parameters) {
+                    return sizeof(uint32_t);
+                } 
+                return sizeof(uint32_t) * (1 + GetParameters()->size());
+            }
+
             uint32_t GetParameterCount() {
                 return this->m_ParameterCount;
             }
 
-            uint32_t* GetParameters() {
+            std::vector<uint32_t> *GetParameters() {
                 return this->m_Parameters;
+            }
+
+            std::string GetParametersToString() {
+                std::stringstream param_string;
+                if (!this->m_Parameters) {
+                    return "";
+                }
+                for (uint32_t parameter : *this->m_Parameters) {
+                    param_string << parameter << " ";
+                }
+                return param_string.str();
+            }
+
+
+            void AddParameter(uint32_t Parameter) {
+                if (!this->m_Parameters) {
+                    this->m_Parameters = new std::vector<uint32_t>();
+                }
+                m_Parameters->push_back(Parameter);
             }
 
         private:                
@@ -41,13 +76,13 @@ namespace pawn {
             pawn::Opcode m_Opcode;
             ParameterTypes m_Type;
             uint32_t m_ParameterCount;
-            uint32_t *m_Parameters;
+            std::vector<uint32_t> *m_Parameters;
     };
 
     // TODO: Dynamically build from YML or something smarter.
     static Command* CommandList[] = {
-        new Command(CMD_UNKNOWN, "unknown", VALUE, 0), // CMD_UNKNOWN
-        new Command(CMD_LOAD_PRI, "load.pri", VALUE, 1), // CMD_LOAD_PRI
+        new Command(CMD_NOOP, "noop", VALUE, 0), // CMD_NOOP
+        new Command(CMD_LOAD_PRI, "load.pri", ADDRESS, 1), // CMD_LOAD_PRI
         new Command(CMD_LOAD_ALT, "load.alt", VALUE, 1), // CMD_LOAD_ALT
         new Command(CMD_LOAD_S_PRI, "load.s.pri", VALUE, 1), // CMD_LOAD_S_PRI
         new Command(CMD_LOAD_S_ALT, "load.s.alt", VALUE, 1), // CMD_LOAD_S_ALT
