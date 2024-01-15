@@ -223,13 +223,11 @@ namespace pawn {
 
     enum ParameterTypes {
         VALUE,    // Cell containing a number | TODO: float, etc.
-        PROC,     // Address
         CALL,     // Address
         JUMP,     // Address
         SWITCH,   // Address
-        ADDRESS,  // Address (for manual insertion by CASETBL)
         CASETBL,  // (casenum|ADDRESS) followed by casenum times (SIMPLE|ADDRESS) pairs
-        ICASETBL, // (casenum|ADDRESS) followed by casenum times (SIMPLE|ADDRESS) pairs
+        ICASETBL,  // (casenum|ADDRESS) followed by casenum times (SIMPLE|ADDRESS) pairs
         PACKED,    // Packed inside the opcode itself, no additional field
         NATIVE
     };

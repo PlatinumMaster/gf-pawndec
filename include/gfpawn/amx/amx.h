@@ -139,7 +139,8 @@ namespace pawn {
                     uint32_t CommandIndex = *CodePtr++;
                     std::cout << (CommandIndex & 0xFFFF) << std::endl;
                     Command* cmd = new Command(CommandList[CommandIndex & 0xFFFF]);
-                    std::cout << cmd->GetLabel() << std::endl;
+                    std::cout << (cmd->GetLabel()) << "Params: " << cmd->GetParameterCount() << std::endl;
+                    bool IsPacked = false;
                     for (ParameterTypes t : cmd->GetParameterTypes()) {
                         switch (t) {
                             case JUMP: {
@@ -147,6 +148,14 @@ namespace pawn {
                                 Jump* Target = (Jump *)cmd->GetParameters()->at(0);
                                 if (std::find(m_JumpList.begin(), m_JumpList.end(), Target->GetValue()) == m_JumpList.end()) {
                                     m_JumpList.push_back(Target->GetValue());
+                                }
+                                break;
+                            }
+                            case SWITCH: {
+                                cmd->AddParameter(new Switch(CurrentAddress + (int32_t)*CodePtr++));
+                                Switch* Target = (Switch *)cmd->GetParameters()->at(0);
+                                if (std::find(m_CaseTableList.begin(), m_CaseTableList.end(), Target->GetValue()) == m_CaseTableList.end()) {
+                                    m_CaseTableList.push_back(Target->GetValue());
                                 }
                                 break;
                             }
@@ -168,19 +177,43 @@ namespace pawn {
                             }
                             case PACKED: {
                                 cmd->AddParameter(new Value(CommandIndex >> 0x8));
+                                IsPacked = true;
                                 break;
                             }
                             case CASETBL: {
-                                uint32_t case_count = *CodePtr++;
-                                uint32_t default_addr = *CodePtr++;
-                                this->m_JumpTableList.push_back(default_addr);
-                                for (int i = 0; i < case_count << 1; ++i) {
-                                    *CodePtr++;
+                                Cases *cases = new Cases();
+                                uint32_t Skip = 0x2;
+
+                                // Default case is also a case...
+                                uint32_t cases_count = *CodePtr++;
+                                Jump *default_address = new Jump(CurrentAddress + sizeof(uint32_t) + *CodePtr++);
+                                cases->AddEntry({
+                                    cases_count, 
+                                    default_address
+                                });
+                                if (std::find(m_JumpList.begin(), m_JumpList.end(), default_address->GetValue()) == m_JumpList.end()) {
+                                    m_JumpList.push_back(default_address->GetValue());
                                 }
+
+                                // Parse the rest of the actual cases.
+                                for (int i = 0; i < cases_count; ++i) {
+                                    uint32_t case_value = *CodePtr++;
+                                    Jump *jump_address = new Jump(CurrentAddress + (Skip + 1) * sizeof(uint32_t) + *CodePtr++);
+                                    cases->AddEntry({
+                                        case_value, 
+                                        jump_address
+                                    });
+                                    if (std::find(m_JumpList.begin(), m_JumpList.end(), jump_address->GetValue()) == m_JumpList.end()) {
+                                        m_JumpList.push_back(jump_address->GetValue());
+                                    }
+                                    Skip += 0x2;
+                                }
+                                cmd->AddParameter(cases);
                                 break;
                             }
                         }
                     }
+                    std::cout << std::format("Size: {}", IsPacked ? sizeof(uint32_t) : cmd->GetSize()) << std::endl;
                     CurrentAddress += cmd->GetSize();
                     Commands.push_back(cmd);
                 }
@@ -192,14 +225,17 @@ namespace pawn {
                 for (Command * cmd : Commands) {
                     bool IsJump = std::find(m_JumpList.begin(), m_JumpList.end(), CurrentAddress) != m_JumpList.end();
                     bool IsCall = std::find(m_CallList.begin(), m_CallList.end(), CurrentAddress) != m_CallList.end();
+                    bool IsCaseTable = std::find(m_CaseTableList.begin(), m_CaseTableList.end(), CurrentAddress) != m_CaseTableList.end();
                     if (IsJump) {
                         amx_output << std::format("jump_{}:", CurrentAddress) << std::endl;
                     } else if (CurrentAddress == m_Header->InstructionPointer) {
                         amx_output << std::format("main:", CurrentAddress) << std::endl;
                     } else if (IsCall) {
                         amx_output << std::format("fn_{}:", CurrentAddress) << std::endl;
+                    } else if (IsCaseTable) {
+                        amx_output << std::format("casetbl_{}:", CurrentAddress) << std::endl;
                     }
-                    amx_output << std::format("\t{} {}", cmd->GetLabel(), cmd->GetParametersToString()) << std::endl;
+                    amx_output << std::format("\t{} {}", cmd->GetLabel(), cmd->GetParametersToString(), CurrentAddress) << std::endl;
                     CurrentAddress += cmd->GetSize();
                 }
                 amx_output.close();
@@ -255,7 +291,7 @@ namespace pawn {
             // Disassembly stuff.
             std::vector<uint32_t> m_CallList;
             std::vector<uint32_t> m_JumpList;
-            std::vector<uint32_t> m_JumpTableList;
+            std::vector<uint32_t> m_CaseTableList;
             std::vector<uint32_t> m_ClosedList;
 
             // Symbol stuff.

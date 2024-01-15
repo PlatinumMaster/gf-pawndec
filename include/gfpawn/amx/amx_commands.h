@@ -90,7 +90,7 @@ namespace pawn {
             }
 
             std::string ToString() {
-                return std::format("jump_{}", m_Address);
+                return std::format("fn_{}", m_Address);
             } 
 
             int GetSize() {
@@ -108,7 +108,7 @@ namespace pawn {
         public:
             struct CaseTableEntry {
                 uint32_t Value;
-                Jump Target;
+                Jump *Target;
             };
 
             void AddEntry(CaseTableEntry e) {
@@ -118,7 +118,7 @@ namespace pawn {
             std::string ToString() {
                 std::stringstream string;
                 for (CaseTableEntry entry : m_CaseTableEntries) {
-                    string << std::format("case {}, {}", entry.Value, entry.Target.GetValue()) << std::endl;
+                    string << std::format("\tcase {:d}, {}", entry.Value, entry.Target->ToString()) << std::endl;
                 }
                 return string.str();
             } 
@@ -136,13 +136,21 @@ namespace pawn {
             Switch(Cases case_table) {
                 this->m_CaseTable = case_table;
             }
+
+            Switch(uint32_t Address) {
+                this->m_Address = Address;
+            }
             
             Cases GetCaseTable() {
                 return this->m_CaseTable;
             }
             
+            uint32_t GetValue() {
+                return this->m_Address;
+            }
+            
             std::string ToString() {
-                return "0"; // I dunno what to do here lol
+                return std::format("casetbl_{}", m_Address);
             }             
             
             int GetSize() {
@@ -150,6 +158,7 @@ namespace pawn {
             }
         private:
             Cases m_CaseTable;
+            uint32_t m_Address;
     };
 
     class Command {
@@ -183,6 +192,9 @@ namespace pawn {
             uint32_t GetSize() {
                 uint32_t Base = sizeof(uint32_t);
                 if (std::vector<Parameter *> *Parameters = this->GetParameters()) {
+                    if (this->GetParameterTypes().front() == PACKED) {
+                        return Base;
+                    }
                     for (Parameter *p : *Parameters) {
                         Base += p->GetSize();
                     }    
@@ -202,6 +214,9 @@ namespace pawn {
                 std::stringstream param_string;
                 if (!this->m_Parameters) {
                     return "";
+                }
+                if (this->m_Opcode == CMD_CASETBL) {
+                    param_string << std::endl;
                 }
                 for (Parameter *parameter : *this->m_Parameters) {
                     param_string << parameter->ToString() << " ";
