@@ -880,4 +880,4 @@ with open('cmdlist.cpp', 'w') as SRC:
         CMD_NAMES[x]
         PARAM_TYPES[x]
         PARAM_CNTS[x]
-        SRC.write(f'new Command({CMD_NAMES_FMTTED[x]}, "{CMD_NAMES[x]}", {PARAM_TYPES[x]}, {PARAM_CNTS[x]}), // {CMD_NAMES_FMTTED[x]}\n')
+        SRC.write(f'new Command({CMD_NAMES_FMTTED[x]}, "{CMD_NAMES[x]}", {{{[PARAM_TYPES[x] for k in range(PARAM_CNTS[x])]}}}), // {CMD_NAMES_FMTTED[x]}\n')

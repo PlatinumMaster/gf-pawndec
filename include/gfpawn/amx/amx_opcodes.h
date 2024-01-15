@@ -230,7 +230,8 @@ namespace pawn {
         ADDRESS,  // Address (for manual insertion by CASETBL)
         CASETBL,  // (casenum|ADDRESS) followed by casenum times (SIMPLE|ADDRESS) pairs
         ICASETBL, // (casenum|ADDRESS) followed by casenum times (SIMPLE|ADDRESS) pairs
-        PACKED    // Packed inside the opcode itself, no additional field
+        PACKED,    // Packed inside the opcode itself, no additional field
+        NATIVE
     };
 }
 

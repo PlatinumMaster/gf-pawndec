@@ -136,48 +136,50 @@ namespace pawn {
                 uint32_t CodeSize = m_Header->Data - m_Header->Code;
 
                 while (CurrentAddress < CodeSize) {
-                    uint32_t Idx = *CodePtr++;
-                    Command* cmd = new Command(CommandList[Idx & 0xFFFF]);
-                    for (int Index = 0; Index < cmd->GetParameterCount(); ++Index) {  
-                        switch (cmd->GetParameterType()) {
-                            case PACKED: {
-                                // Packed (.p) parameters store parameter in upper 16 bits of command.
-                                uint32_t parameter = (Idx >> 0x8) & 0xFFFF;
-                                cmd->AddParameter(parameter);
+                    uint32_t CommandIndex = *CodePtr++;
+                    std::cout << (CommandIndex & 0xFFFF) << std::endl;
+                    Command* cmd = new Command(CommandList[CommandIndex & 0xFFFF]);
+                    std::cout << cmd->GetLabel() << std::endl;
+                    for (ParameterTypes t : cmd->GetParameterTypes()) {
+                        switch (t) {
+                            case JUMP: {
+                                cmd->AddParameter(new Jump(CurrentAddress + (int32_t)*CodePtr++));
+                                Jump* Target = (Jump *)cmd->GetParameters()->at(0);
+                                if (std::find(m_JumpList.begin(), m_JumpList.end(), Target->GetValue()) == m_JumpList.end()) {
+                                    m_JumpList.push_back(Target->GetValue());
+                                }
                                 break;
                             }
-                            case CALL:
-                            case JUMP: {
-                                // Separate calls and jumps so we know where they are; will become important in pass 2.
-                                uint32_t parameter = *CodePtr++;
-                                if (cmd->GetParameterType() == CALL) {
-                                    cmd->AddParameter(CurrentAddress - 4 + (int32_t)parameter);
-                                    uint32_t CallAddress = cmd->GetParameters()->at(0);
-                                    if (std::find(m_CallList.begin(), m_CallList.end(), CallAddress) == m_CallList.end()) {
-                                        m_CallList.push_back(CallAddress);
-                                    }
-                                } else if (cmd->GetParameterType() == JUMP) {
-                                    cmd->AddParameter(CurrentAddress - 4 + (int32_t)parameter);
-                                    uint32_t JumpAddress = cmd->GetParameters()->at(0);
-                                    if (std::find(m_JumpList.begin(), m_JumpList.end(), JumpAddress) == m_JumpList.end()) {
-                                        m_JumpList.push_back(JumpAddress);
-                                    }
+                            case CALL: {
+                                cmd->AddParameter(new Call(CurrentAddress + (int32_t)*CodePtr++));
+                                Call* Target = (Call *)cmd->GetParameters()->at(0);
+                                if (std::find(m_CallList.begin(), m_CallList.end(), Target->GetValue()) == m_CallList.end()) {
+                                    m_CallList.push_back(Target->GetValue());
                                 }
+                                break;
+                            }
+                            case NATIVE: {
+                                cmd->AddParameter(new Native(m_NativeSymbols[*CodePtr++]));
+                                break;
+                            }
+                            case VALUE: {
+                                cmd->AddParameter(new Value(*CodePtr++));
+                                break;
+                            }
+                            case PACKED: {
+                                cmd->AddParameter(new Value(CommandIndex >> 0x8));
                                 break;
                             }
                             case CASETBL: {
                                 uint32_t case_count = *CodePtr++;
                                 uint32_t default_addr = *CodePtr++;
+                                this->m_JumpTableList.push_back(default_addr);
                                 for (int i = 0; i < case_count << 1; ++i) {
                                     *CodePtr++;
                                 }
                                 break;
                             }
-                            default: {
-                                cmd->AddParameter(*CodePtr++);
-                                break;
-                            }
-                        } 
+                        }
                     }
                     CurrentAddress += cmd->GetSize();
                     Commands.push_back(cmd);
@@ -253,6 +255,7 @@ namespace pawn {
             // Disassembly stuff.
             std::vector<uint32_t> m_CallList;
             std::vector<uint32_t> m_JumpList;
+            std::vector<uint32_t> m_JumpTableList;
             std::vector<uint32_t> m_ClosedList;
 
             // Symbol stuff.
