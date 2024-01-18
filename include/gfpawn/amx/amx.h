@@ -7,11 +7,15 @@
 #include <vector>
 #include <algorithm>
 #include <format>
+#include <map>
+#include <stack>
+#include <cmath>
 
 #include "amx_commands.h"
 #include "amx_opcodes.h"
 #include "amx_constants.h"
 #include "amx_util.h"
+#include "../ir/ir.h"
 
 namespace pawn {
     class AMX {
@@ -38,12 +42,12 @@ namespace pawn {
                 std::cout << "Script Container Information:" << std::endl;
 
                 // Header stuff.
-                printf("- Definition size:  %i\n", m_Header->DefinitionSize);
-                printf("- Code Start Address:   0x%08X\n", m_Header->Code);
-                printf("- Data Start Address:   0x%08X\n", m_Header->Data);
-                printf("- Heap Start Address:   0x%08X\n", m_Header->Heap);
-                printf("- Stack End Address:    0x%08X\n", m_Header->StackPointer);
-                printf("- Program Main: 0x%08X\n", m_Header->InstructionPointer);
+                std::cout << std::format("- Definition size:  {}", m_Header->DefinitionSize) << std::endl;
+                std::cout << std::format("- Code Start Address:   0x{:X}", m_Header->Code) << std::endl;
+                std::cout << std::format("- Data Start Address:   0x{:X}", m_Header->Data) << std::endl;
+                std::cout << std::format("- Heap Start Address:   0x{:X}", m_Header->Heap) << std::endl;
+                std::cout << std::format("- Stack End Address:    0x{:X}", m_Header->StackPointer) << std::endl;
+                std::cout << std::format("- Program Main: 0x{:X}", m_Header->InstructionPointer) << std::endl;
 
                 // Functions and whatnot.
                 pawn::AMXUtil::TableDef Properties[] = {
@@ -114,7 +118,9 @@ namespace pawn {
                     // Copy decompressed data to the respective locations.
                     memcpy(m_Code, Data, m_CodeSize);
                     memcpy(m_Data, Data + m_CodeSize, m_DataSize);
-
+                    std::fstream dump("data.bin", std::ios::out | std::ios::binary);
+                    dump.write((char *)m_Data, m_DataSize);
+                    dump.close();
                     free(Data);
                 } else {
                     // Not compressed; fill up m_Code/m_Data normally.
@@ -128,42 +134,136 @@ namespace pawn {
                 input.close();
             }
 
+            void Disassemble(std::string path) {
+                Decode();
+                ConstructFlow();
+                WriteAssembly(path);
+            }
+
+
+            void Decompile(std::string path) {
+                Decode();
+                ConstructFlow();
+                CallAnalysis();
+                WriteLiftedRepresentation(path);
+            }
+            
+            void WriteLiftedRepresentation(std::string path) {
+                std::fstream ir_output(path, std::ios::out);
+                for (std::pair<uint32_t, Node *> function : m_Functions) {
+                    Node *operation = function.second;
+                    uint32_t Address = function.first;
+                    std::vector<uint32_t> m_ClosedList;
+                    m_ClosedList.push_back(Address);
+                    while (operation) {
+                        if (operation->m_Command) {
+                            Command *cmd = operation->m_Command;
+                            switch (cmd->GetOpcode()) {
+                                case CMD_PROC: {
+                                    if (Address == m_Header->InstructionPointer) {
+                                        ir_output << std::format("main(", Address);
+                                    } else {
+                                        ir_output << std::format("fn_{}(", Address);
+                                    }
+                                    uint32_t parameter_max = m_FuncParameters.at(Address);
+                                    for (int i = 0; i < parameter_max; ++i) {
+                                        ir_output << std::format("p{}", i);
+                                        if (i != parameter_max - 1) {
+                                            ir_output << std::format(", ", i);
+                                        }
+                                    }
+                                    ir_output << std::format(") {{") << std::endl;
+                                    break;
+                                }
+                                case CMD_RETN: {
+                                    ir_output << std::format("}}") << std::endl;
+                                    break;
+                                }
+                                case CMD_JUMP: {
+                                    uint32_t jump_address = ((Jump *)cmd->GetParameters()->at(0))->GetValue();
+                                    if (std::find(m_ClosedList.begin(), m_ClosedList.end(), jump_address) != m_ClosedList.end()) {
+                                        continue;
+                                    }
+                                    if (function.first == jump_address) {
+                                        continue;
+                                    }
+                                    m_ClosedList.push_back(jump_address);
+                                    break;
+                                }
+                                default: {
+                                    ir_output << std::format("\t#emit {} {}", cmd->GetLabel(), cmd->GetParametersToString()) << std::endl;
+                                    break;
+                                }
+                            }
+                            Address += cmd->GetSize();
+                        }
+                        operation = operation->m_Next;
+                    } 
+                }
+                ir_output.close(); 
+            }
+
+            void CallAnalysis() {
+                std::cout << "Doing call analysis..." << std::endl;
+                for (std::pair<uint32_t, Node*> block_pair : m_Functions) {
+                    std::stack<uint32_t> Stack;
+                    CallAnalysisFromNode(block_pair.second, Stack);
+                }
+
+                for (std::pair<uint32_t, std::vector<uint32_t>> p : m_FuncEstimates) {
+                    if (std::adjacent_find(p.second.begin(), p.second.end(), std::not_equal_to<>()) == p.second.end()) {
+                        std::cout << std::format("Parameters are in agreement! function {} has {} parameters...", p.first, p.second.at(0)) << std::endl;
+                    } else {
+                        std::sort(p.second.begin(), p.second.end());
+                        std::cout << std::format("Parameters are NOT in agreement! function {} Maybe varadic function. Will assume largest param cnt ({})", p.first, p.second.at(0)) << std::endl;
+                    }
+                    m_FuncParameters.insert(std::make_pair(p.first, p.second.at(0)));
+                }
+
+                for (std::pair<std::string, std::vector<uint32_t>> p : m_NativeEstimates) {
+                    if (std::adjacent_find(p.second.begin(), p.second.end(), std::not_equal_to<>()) == p.second.end()) {
+                        std::cout << std::format("Parameters are in agreement! function {} has {} parameters...", p.first, p.second.at(0)) << std::endl;
+                    } else {
+                        std::sort(p.second.begin(), p.second.end());
+                        std::cout << std::format("Parameters are NOT in agreement! function {} Maybe varadic function. Will assume largest param cnt ({})", p.first, p.second.at(0)) << std::endl;
+                    }
+                    m_NativeParameters.insert(std::make_pair(p.first, p.second.at(0)));
+                }
+            }
+
             void Decode() {
-                std::vector<Command *> Commands;
-                // Pass 1: Parse all opcodes in order.
                 uint32_t *CodePtr = (uint32_t*)(m_Code);
                 uint32_t CurrentAddress = 0x0;
                 uint32_t CodeSize = m_Header->Data - m_Header->Code;
 
                 while (CurrentAddress < CodeSize) {
                     uint32_t CommandIndex = *CodePtr++;
-                    std::cout << (CommandIndex & 0xFFFF) << std::endl;
                     Command* cmd = new Command(CommandList[CommandIndex & 0xFFFF]);
-                    std::cout << (cmd->GetLabel()) << "Params: " << cmd->GetParameterCount() << std::endl;
+                    std::cout << (cmd->GetLabel()) << std::endl << "Params: " << cmd->GetParameterCount() << std::endl;
                     bool IsPacked = false;
                     for (ParameterTypes t : cmd->GetParameterTypes()) {
                         switch (t) {
                             case JUMP: {
                                 cmd->AddParameter(new Jump(CurrentAddress + (int32_t)*CodePtr++));
                                 Jump* Target = (Jump *)cmd->GetParameters()->at(0);
-                                if (std::find(m_JumpList.begin(), m_JumpList.end(), Target->GetValue()) == m_JumpList.end()) {
-                                    m_JumpList.push_back(Target->GetValue());
+                                if (std::find(m_JumpAddresses.begin(), m_JumpAddresses.end(), Target->GetValue()) == m_JumpAddresses.end()) {
+                                    m_JumpAddresses.push_back(Target->GetValue());
                                 }
                                 break;
                             }
                             case SWITCH: {
                                 cmd->AddParameter(new Switch(CurrentAddress + (int32_t)*CodePtr++));
                                 Switch* Target = (Switch *)cmd->GetParameters()->at(0);
-                                if (std::find(m_CaseTableList.begin(), m_CaseTableList.end(), Target->GetValue()) == m_CaseTableList.end()) {
-                                    m_CaseTableList.push_back(Target->GetValue());
+                                if (std::find(m_CaseTables.begin(), m_CaseTables.end(), Target->GetValue()) == m_CaseTables.end()) {
+                                    m_CaseTables.push_back(Target->GetValue());
                                 }
                                 break;
                             }
                             case CALL: {
                                 cmd->AddParameter(new Call(CurrentAddress + (int32_t)*CodePtr++));
                                 Call* Target = (Call *)cmd->GetParameters()->at(0);
-                                if (std::find(m_CallList.begin(), m_CallList.end(), Target->GetValue()) == m_CallList.end()) {
-                                    m_CallList.push_back(Target->GetValue());
+                                if (std::find(m_FunctionAddresses.begin(), m_FunctionAddresses.end(), Target->GetValue()) == m_FunctionAddresses.end()) {
+                                    m_FunctionAddresses.push_back(Target->GetValue());
                                 }
                                 break;
                             }
@@ -176,35 +276,35 @@ namespace pawn {
                                 break;
                             }
                             case PACKED: {
-                                cmd->AddParameter(new Value(CommandIndex >> 0x8));
+                                cmd->AddParameter(new Value((int16_t)(CommandIndex >> 0x10)));
                                 IsPacked = true;
                                 break;
                             }
                             case CASETBL: {
                                 Cases *cases = new Cases();
-                                uint32_t Skip = 0x2;
+                                int32_t Skip = 0x2;
 
                                 // Default case is also a case...
-                                uint32_t cases_count = *CodePtr++;
-                                Jump *default_address = new Jump(CurrentAddress + sizeof(uint32_t) + *CodePtr++);
+                                int32_t cases_count = *CodePtr++;
+                                Jump *default_address = new Jump(CurrentAddress + sizeof(int32_t) + *CodePtr++);
                                 cases->AddEntry({
                                     cases_count, 
                                     default_address
                                 });
-                                if (std::find(m_JumpList.begin(), m_JumpList.end(), default_address->GetValue()) == m_JumpList.end()) {
-                                    m_JumpList.push_back(default_address->GetValue());
+                                if (std::find(m_JumpAddresses.begin(), m_JumpAddresses.end(), default_address->GetValue()) == m_JumpAddresses.end()) {
+                                    m_JumpAddresses.push_back(default_address->GetValue());
                                 }
 
                                 // Parse the rest of the actual cases.
                                 for (int i = 0; i < cases_count; ++i) {
-                                    uint32_t case_value = *CodePtr++;
+                                    int32_t case_value = *CodePtr++;
                                     Jump *jump_address = new Jump(CurrentAddress + (Skip + 1) * sizeof(uint32_t) + *CodePtr++);
                                     cases->AddEntry({
                                         case_value, 
                                         jump_address
                                     });
-                                    if (std::find(m_JumpList.begin(), m_JumpList.end(), jump_address->GetValue()) == m_JumpList.end()) {
-                                        m_JumpList.push_back(jump_address->GetValue());
+                                    if (std::find(m_JumpAddresses.begin(), m_JumpAddresses.end(), jump_address->GetValue()) == m_JumpAddresses.end()) {
+                                        m_JumpAddresses.push_back(jump_address->GetValue());
                                     }
                                     Skip += 0x2;
                                 }
@@ -214,18 +314,225 @@ namespace pawn {
                         }
                     }
                     std::cout << std::format("Size: {}", IsPacked ? sizeof(uint32_t) : cmd->GetSize()) << std::endl;
+                    m_Commands.insert(std::pair<uint32_t, Command *>(CurrentAddress, cmd));
                     CurrentAddress += cmd->GetSize();
-                    Commands.push_back(cmd);
                 }
-                std::cout << std::format("Calls = {}, Jumps = {}", m_CallList.size(), m_JumpList.size()) << std::endl;
+                std::cout << std::format("Calls = {}, Jumps = {}", m_FunctionAddresses.size(), m_JumpAddresses.size()) << std::endl;
+            }
 
-                // Pass 2: Write all higher level reprs to amx output.
-                CurrentAddress = 0;
-                std::fstream amx_output("disassembly.amx", std::ios::out);
-                for (Command * cmd : Commands) {
-                    bool IsJump = std::find(m_JumpList.begin(), m_JumpList.end(), CurrentAddress) != m_JumpList.end();
-                    bool IsCall = std::find(m_CallList.begin(), m_CallList.end(), CurrentAddress) != m_CallList.end();
-                    bool IsCaseTable = std::find(m_CaseTableList.begin(), m_CaseTableList.end(), CurrentAddress) != m_CaseTableList.end();
+            void ConstructFlow() {
+                // Init; setup blocks for all calls and jumps.
+                for (uint32_t Address : m_FunctionAddresses) {
+                    this->m_Functions.insert(std::make_pair(Address, new Node(NULL, NULL)));
+                }
+                for (uint32_t Address : m_JumpAddresses) {
+                    this->m_Jumps.insert(std::make_pair(Address, new Node(NULL, NULL)));
+                }
+
+                // Now build the lists with commands.
+                for (uint32_t Address : m_FunctionAddresses) {
+                    PopulateBlocks(Address);
+                }
+                
+                for (uint32_t Address : m_JumpAddresses) {
+                    PopulateBlocks(Address);
+                }
+            }
+
+            void PopulateBlocks(uint32_t Address) {
+                Node *Head, *Current;
+                uint32_t CurrentAddress = Address;
+
+                // Find a block
+                if (m_Jumps.find(Address) != m_Jumps.end()) {
+                    Head = m_Jumps.at(Address);
+                } else if (m_Functions.find(Address) != m_Functions.end()) {
+                    Head = m_Functions.at(Address);
+                }
+                Current = Head;
+
+                while (true) {                    
+                    // Get the command corresponding to the address.
+                    Command *command = this->m_Commands.at(CurrentAddress);
+
+                    // Update the current node's command.
+                    Current->m_Command = command;
+                    Current->Address = CurrentAddress;
+
+                    Node *NewNode = new Node(Current, nullptr);
+
+                    // Handle the next node
+                    switch (command->GetOpcode()) {
+                        case CMD_JUMP: 
+                        case CMD_JREL: {  
+                            // Link to absolute jump.
+                            uint32_t JumpAddress = ((Jump *)command->GetParameters()->at(0))->GetValue();
+                            Current->m_Next = m_Jumps.at(JumpAddress);
+                            break;
+                        }     
+                        case CMD_JZER:      
+                        case CMD_JNZ:       
+                        case CMD_JEQ:       
+                        case CMD_JNEQ:      
+                        case CMD_JLESS:     
+                        case CMD_JLEQ:      
+                        case CMD_JGRTR:     
+                        case CMD_JGEQ:      
+                        case CMD_JSLESS:    
+                        case CMD_JSLEQ:     
+                        case CMD_JSGRTR:    
+                        case CMD_JSGEQ: {
+                            // Link to conditional jump.
+                            uint32_t JumpAddress = ((Jump *)command->GetParameters()->at(0))->GetValue();
+                            // Create new node, link it to our current one.
+                            // Set up conditional jump.
+                            Current->m_NextConditionalOrCall = m_Jumps.at(JumpAddress);
+                            Current->m_Next = NewNode;
+                            break;
+                        }
+                        case CMD_CALL: {
+                            // Link to call.
+                            uint32_t CallAddress = ((Call *)command->GetParameters()->at(0))->GetValue();
+                            // Set up conditional jump.
+                            Current->m_NextConditionalOrCall = m_Functions.at(CallAddress);
+                            Current->m_Next = NewNode;
+                            break;
+                        }
+                        case CMD_RETN: {
+                            break;
+                        }
+                        default: {
+                            // Link to instruction.
+                            Current->m_Next = NewNode;
+                            break;
+                        }
+                    }
+
+                    if (command->GetOpcode() == CMD_JUMP || command->GetOpcode() == CMD_RETN) {
+                        break;
+                    }
+                    
+                    Current = Current->m_Next;
+                    CurrentAddress += command->GetSize();
+                }
+            }
+
+            void CallAnalysisFromNode(Node *head, std::stack<uint32_t> Stack) {    
+                Node *current = head;
+                while (current) {
+                    if (std::find(m_CallAnalysisClosedList.begin(), m_CallAnalysisClosedList.end(), current->Address) != m_CallAnalysisClosedList.end()) {
+                        // Already processed this...
+                        return;
+                    }
+                    m_CallAnalysisClosedList.push_back(current->Address);
+                    Command *command = current->m_Command;
+                    std::cout << command->GetLabel() << std::endl;
+                    std::cout << current->m_Next << std::endl;
+                    std::cout << current->m_NextConditionalOrCall << std::endl;
+                    std::cout << "Old Stack Size: " << Stack.size() << std::endl;
+
+                    switch (command->GetOpcode()) {
+                        case CMD_PUSH_PRI:  
+                        case CMD_PUSH_ALT:
+                        case CMD_PUSH_P_C:  
+                        case CMD_PUSH_P:  
+                        case CMD_PUSH_C:  
+                        case CMD_PUSH_P_S:
+                        case CMD_PUSHR_PRI: 
+                        case CMD_PUSHR_C:   
+                        case CMD_PUSHR_S:   
+                        case CMD_PUSHR_ADR: 
+                        case CMD_PUSH_ADR:      
+                        case CMD_PUSH2_C:   
+                        case CMD_PUSH2:     
+                        case CMD_PUSH2_S:   
+                        case CMD_PUSH2_ADR: 
+                        case CMD_PUSH3_C:   
+                        case CMD_PUSH3:     
+                        case CMD_PUSH3_S:   
+                        case CMD_PUSH3_ADR: 
+                        case CMD_PUSH4_C:   
+                        case CMD_PUSH4:     
+                        case CMD_PUSH4_S:   
+                        case CMD_PUSH4_ADR: 
+                        case CMD_PUSH5_C:   
+                        case CMD_PUSH5:     
+                        case CMD_PUSH5_S:   
+                        case CMD_PUSH5_ADR:
+                        case CMD_PUSH_P_ADR:
+                        case CMD_PUSHR_P_C: 
+                        case CMD_PUSHR_P_S: 
+                        case CMD_PUSHR_P_ADR: {
+                            if (!command->GetParameterCount()) {
+                                // Shim
+                                Stack.push(0);
+                            } else {
+                                for (int j = 0; j < command->GetParameterCount(); ++j) {
+                                    uint32_t Data = ((Value*)command->GetParameters()->at(j))->GetValue();
+                                    std::cout << Data << std::endl;
+                                    Stack.push(Data);
+                                }
+                            }
+                            break;
+                        }
+                        case CMD_POP_PRI:
+                        case CMD_POP_ALT: {              
+                            Stack.pop();
+                            break;
+                        }
+                        case CMD_CALL: {
+                            // Most recent element on the stack should be byte count for parameter...
+                            uint32_t parameter_count = Stack.top();
+                            parameter_count >>= 0x2;
+                            Stack.pop();
+                            uint32_t TargetFunction = ((Call *)command->GetParameters()->at(0))->GetValue();
+                            m_FuncEstimates[TargetFunction].push_back(parameter_count);
+                            for (int j = 0; j < parameter_count; ++j) {
+                                Stack.pop();
+                            }
+                            break;
+                        }
+                        case CMD_SYSREQ_N: {
+                            uint32_t parameter_count = ((Value *)command->GetParameters()->at(1))->GetValue() >> 0x2;
+                            std::string TargetFunction = ((Native *)command->GetParameters()->at(0))->ToString();
+                            m_NativeEstimates[TargetFunction].push_back(parameter_count);
+                            for (int j = 0; j < parameter_count; ++j) {
+                                Stack.pop();
+                            }
+                            break;
+                        }
+                        case CMD_JZER:      
+                        case CMD_JNZ:       
+                        case CMD_JEQ:       
+                        case CMD_JNEQ:      
+                        case CMD_JLESS:     
+                        case CMD_JLEQ:      
+                        case CMD_JGRTR:     
+                        case CMD_JGEQ:      
+                        case CMD_JSLESS:    
+                        case CMD_JSLEQ:     
+                        case CMD_JSGRTR:    
+                        case CMD_JSGEQ: {
+                            if (current->m_NextConditionalOrCall) {
+                                CallAnalysisFromNode(current->m_NextConditionalOrCall, Stack);
+                            }
+                            break;
+                        }
+                    }
+
+                    std::cout << "New Stack Size: " << Stack.size() << std::endl;
+                    current = current->m_Next;
+                }
+            }
+
+            void WriteAssembly(std::string path) {
+                uint32_t CurrentAddress = 0;
+                std::fstream amx_output(path, std::ios::out);
+                for (std::pair<uint32_t, Command *> cmd_pair : m_Commands) {
+                    bool IsJump = std::find(m_JumpAddresses.begin(), m_JumpAddresses.end(), CurrentAddress) != m_JumpAddresses.end();
+                    bool IsCall = std::find(m_FunctionAddresses.begin(), m_FunctionAddresses.end(), CurrentAddress) != m_FunctionAddresses.end();
+                    bool IsCaseTable = std::find(m_CaseTables.begin(), m_CaseTables.end(), CurrentAddress) != m_CaseTables.end();
+                    
                     if (IsJump) {
                         amx_output << std::format("jump_{}:", CurrentAddress) << std::endl;
                     } else if (CurrentAddress == m_Header->InstructionPointer) {
@@ -235,8 +542,9 @@ namespace pawn {
                     } else if (IsCaseTable) {
                         amx_output << std::format("casetbl_{}:", CurrentAddress) << std::endl;
                     }
-                    amx_output << std::format("\t{} {}", cmd->GetLabel(), cmd->GetParametersToString(), CurrentAddress) << std::endl;
-                    CurrentAddress += cmd->GetSize();
+                    amx_output << std::format("\t{} {}", cmd_pair.second->GetLabel(), cmd_pair.second->GetParametersToString(), CurrentAddress) << std::endl;
+
+                    CurrentAddress += cmd_pair.second->GetSize();
                 }
                 amx_output.close();
             }
@@ -288,11 +596,16 @@ namespace pawn {
             uint8_t *m_Data;
             uint32_t m_DataSize;
 
-            // Disassembly stuff.
-            std::vector<uint32_t> m_CallList;
-            std::vector<uint32_t> m_JumpList;
-            std::vector<uint32_t> m_CaseTableList;
-            std::vector<uint32_t> m_ClosedList;
+            // Disassembly stuff. Will likely be deleted...
+            std::vector<uint32_t> m_FunctionAddresses, m_JumpAddresses;
+            std::vector<uint32_t> m_CaseTables;
+            std::map<uint32_t, Command *> m_Commands;
+            std::map<uint32_t, Node*> m_Functions, m_Jumps;
+            std::map<uint32_t, std::vector<uint32_t>> m_FuncEstimates;
+            std::map<std::string, std::vector<uint32_t>> m_NativeEstimates;
+            std::vector<uint32_t> m_CallAnalysisClosedList;
+            std::map<std::string, std::vector<uint32_t>> m_NativeParameters;
+            std::map<uint32_t, uint32_t> m_FuncParameters;
 
             // Symbol stuff.
             std::vector<std::string> m_PublicSymbols; 

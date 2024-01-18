@@ -1,5 +1,5 @@
 #ifndef GF_AMX_OPCODES
-#define GF_AMX_OPCODES
+#define GF_AMX_OPCODES  
 
 namespace pawn {
     enum Opcode {
@@ -164,7 +164,7 @@ namespace pawn {
         CMD_ICALL,     
         CMD_IRETN,     
         CMD_ISWITCH,   
-        CMD_ICASETBL,   // TODO: PROBABLY BROKEN, IMPLEMENT I TABLES
+        CMD_ICASETBL, 
         CMD_LOAD_P_PRI,
         CMD_LOAD_P_ALT,
         CMD_LOAD_P_S_PRI,
@@ -220,6 +220,7 @@ namespace pawn {
         CMD_PUSHR_P_S, 
         CMD_PUSHR_P_ADR
     };
+
 
     enum ParameterTypes {
         VALUE,    // Cell containing a number | TODO: float, etc.

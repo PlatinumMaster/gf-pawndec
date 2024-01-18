@@ -1,0 +1,3 @@
+sysreq.n <Native> <Byte Cnt>
+
+Byte Count >> 2 = number of arguments to read from the stack

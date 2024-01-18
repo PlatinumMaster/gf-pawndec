@@ -24,6 +24,8 @@ int main(int argc, char* argv[]) {
 
   // Open Pawn container.
   pawn::AMX *pAMXContainer = new pawn::AMX(ifs);
-  pAMXContainer->Decode();
+  pAMXContainer->Decompile(std::string(argv[2]));
+  // pAMXContainer->WriteAssembly(std::string(argv[2]));
+  // pAMXContainer->WriteLiftedPawn("test.p");
   return 0;
 }

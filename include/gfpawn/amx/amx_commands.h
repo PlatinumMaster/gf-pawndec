@@ -23,11 +23,15 @@ namespace pawn {
                 return std::format("{}", m_Data);
             } 
 
+            int32_t GetValue() {
+                return m_Data;
+            }
+
             int GetSize() {
                 return sizeof(uint32_t);
             }
         private:
-            uint32_t m_Data;
+            int32_t m_Data;
     };
 
     class Native : public Parameter {
@@ -41,7 +45,7 @@ namespace pawn {
             } 
 
             int GetSize() {
-                return sizeof(uint32_t);
+                return sizeof(int32_t);
             }
         private:
             std::string m_Data;
@@ -76,11 +80,11 @@ namespace pawn {
                 return sizeof(uint32_t);
             }
 
-            uint32_t GetValue(){
+            int32_t GetValue(){
                 return this->m_Address;
             }
         private:
-            uint32_t m_Address;
+            int32_t m_Address;
     };
 
     class Call : public Parameter {
@@ -97,17 +101,17 @@ namespace pawn {
                 return sizeof(uint32_t);
             }
 
-            uint32_t GetValue(){
+            int32_t GetValue(){
                 return this->m_Address;
             }
         private:
-            uint32_t m_Address;
+            int32_t m_Address;
     };
 
     class Cases : public Parameter {
         public:
             struct CaseTableEntry {
-                uint32_t Value;
+                int32_t Value;
                 Jump *Target;
             };
 
@@ -145,7 +149,7 @@ namespace pawn {
                 return this->m_CaseTable;
             }
             
-            uint32_t GetValue() {
+            int32_t GetValue() {
                 return this->m_Address;
             }
             
@@ -158,7 +162,7 @@ namespace pawn {
             }
         private:
             Cases m_CaseTable;
-            uint32_t m_Address;
+            int32_t m_Address;
     };
 
     class Command {
